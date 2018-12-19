@@ -6,7 +6,7 @@ import random
 import math
 
 from tkinter import messagebox
-#from widgets.zip_typer import ZipTyper
+
 
 class RoutingFileGenerator:
     def __init__(self, root):
@@ -361,23 +361,23 @@ class RoutingFileGenerator:
 
         return stop_data
 
-    def build_stop_file(self, a_dict_of_stop_data):
+    def build_file(self, a_dict_of_data, a_file_name):
 
         data = []
         build_header = True
         header = []
-        for stop_id in a_dict_of_stop_data.keys():
-            stop = a_dict_of_stop_data[stop_id]
+        for id in a_dict_of_data.keys():
+            record = a_dict_of_data[id]
             if build_header:
-                header = [key for key, value in stop.items()]
+                header = [key for key, value in record.items()]
                 build_header = False
                 data.append(header)
             line = []
             for key in header:
-                line.append(stop[key])
+                line.append(record[key])
             data.append(line)
 
-        workbook = xlsxwriter.Workbook('Stop_File_Demo.xlsx')
+        workbook = xlsxwriter.Workbook(a_file_name)
         worksheet = workbook.add_worksheet()
 
         # Iterate over the data and write it out row by row.
@@ -389,18 +389,19 @@ class RoutingFileGenerator:
         return None
 
     def initialize_truck_data(self):
-
         # Create variables, must be StringVar, IntVar, DoubleVar, and BooleanVar
-        truckdict = {"Capacity":{"Cube":tk.IntVar(), "Pieces": tk.IntVar(), "Weight": tk.IntVar()},
+        truckdict = {"Capacity":{"Cube":tk.IntVar(), "Pieces": tk.IntVar(), "Weight": tk.IntVar(),"Truck Count":tk.IntVar()},
                      "Facility":{"PreTrip": tk.IntVar(), "PostTrip": tk.IntVar(), "Zip": tk.StringVar()},
                      "Costs/Layover":{"FixedCost": tk.IntVar(), "MiCost": tk.DoubleVar(), "LayoverCost": tk.IntVar(), "MinLayover":tk.IntVar(), "MaxLayover": tk.IntVar(), "MaxDrvTmB4Layover": tk.IntVar()},
                      "Work Rules": {"EarStart": tk.IntVar(), "LatFinish": tk.IntVar(), "MaxWorkTm":tk.IntVar(), "MaxDrvTm": tk.IntVar(), "TargetWrkTm": tk.IntVar()},
-                     "Other_Required": {"TrkID": None, "Longitude": tk.StringVar(), "Latitude": tk.StringVar(), "Available": tk.StringVar(), "OneWay": tk.StringVar(), "Redispatch": tk.StringVar(),"EDate": tk.IntVar(), "LDate":tk.IntVar(), },
+                     "Other_Required": {"Longitude": tk.StringVar(), "Latitude": tk.StringVar(), "Available": tk.StringVar(), "OneWay": tk.StringVar(), "Redispatch": tk.StringVar(),"EDate": tk.IntVar(), "LDate":tk.IntVar(), },
                      }
         # Default Value Loading
         truckdict["Capacity"]["Cube"].set(1500)
         truckdict["Capacity"]["Pieces"].set(55)
         truckdict["Capacity"]["Weight"].set(9999)
+        truckdict["Capacity"]["Truck Count"].set(0)
+
 
         truckdict["Facility"]["PreTrip"].set(60)
         truckdict["Facility"]["PostTrip"].set(15)
@@ -419,16 +420,49 @@ class RoutingFileGenerator:
         truckdict["Work Rules"]["MaxDrvTm"].set(10)
         truckdict["Work Rules"]["TargetWrkTm"].set(12)
 
-        truckdict["Other_Required"]["TrkID"] = []
         truckdict["Other_Required"]["Longitude"].set("")
         truckdict["Other_Required"]["Latitude"].set("")
         truckdict["Other_Required"]["Available"].set("TRUE")
         truckdict["Other_Required"]["OneWay"].set("FALSE")
-        truckdict["Other_Required"]["Redispatch"].set("")
+        truckdict["Other_Required"]["Redispatch"].set("FALSE")
         truckdict["Other_Required"]["EDate"].set(0)
         truckdict["Other_Required"]["LDate"].set(9)
 
         return truckdict
+
+    def build_truck_data(self):
+        # generate the number of truck ids required (either fixed per day or = stops/5)
+        if self.truck_data["Capacity"]["Truck Count"].get()>0:
+            truck_count_is_fixed=True
+        else:
+            truck_count_is_fixed=False
+
+        truck_ids = self.transform_capacity_into_trucks(truck_count_is_fixed)
+
+        # build the constants for each truck
+        constants = {}
+        for key1 in self.truck_data.keys():
+            for key2 in self.truck_data[key1].keys():
+                constants[key2] = self.truck_data[key1][key2].get()
+
+        # remove the truck count constant
+        constants.pop("Truck Count")
+
+        # generate the lat and lon for the facility zip
+        zip_center = self.get_zip_centroid_dict()
+        facility_zip = int(self.truck_data["Facility"]["Zip"].get())
+        constants["Latitude"] = zip_center[facility_zip]["Latitude"]
+        constants["Longitude"] = zip_center[facility_zip]["Longitude"]
+
+        # write the last of the updates
+        truck_data = {}
+        for truck_id in truck_ids:
+            truck_data[truck_id] = {}
+            truck = truck_data[truck_id]
+            truck["TrkID"]=truck_id
+            for key in constants:
+                truck[key] = constants[key]
+        return truck_data
 
     def browse_for_design_file(self):
         self.design_file.set(tk.filedialog.askopenfilename(title="Select Design File Containing Expected Zip Demand"))
@@ -443,8 +477,9 @@ class RoutingFileGenerator:
 
     def build_routing_files(self):
         stop_data = self.build_stop_data()
-        self.build_stop_file(stop_data)
+        self.build_file(stop_data,'Stop_File_Demo.xlsx')
         truck_data = self.build_truck_data()
+        self.build_file(truck_data,'Truck_File_Demo.TRUCK')
         print("self.build_stop_file() completed")
         tk.messagebox.showinfo("Routing Files Generator", "Stop and Truck File Generated Successfully.")
         return None
@@ -478,6 +513,21 @@ class RoutingFileGenerator:
                 stop_id = "{}_{}".format(key, stop_num)
                 stop_ids.append(stop_id)
         return stop_ids
+
+    def transform_capacity_into_trucks(self, true_if_fixed):
+        truck_ids = []
+        if true_if_fixed:
+            days = []
+            for prob, day in self.get_discrete_dist("Days Of Service"):
+                days.append(day)
+            for day in days:
+                for i in range(self.truck_data["Capacity"]["Truck Count"].get()):
+                    truck_ids.append("Truck_{0}_{1}".format(day, i))
+        else:
+            for i in range(len(self.stop_data)):
+                truck_ids.append("Truck_{0}".format(i))
+        return truck_ids
+
 
     def discrete_dist_draw(self, a_PDF_List):
         """Returns a realization of a random variable according to a piecewise PDF, ex. [(.25,1), (.75,2)]"""
