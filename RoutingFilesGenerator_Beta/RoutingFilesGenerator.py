@@ -4,7 +4,8 @@ import xlrd
 import xlsxwriter
 import random
 import math
-
+import csv
+import traceback
 from tkinter import messagebox
 
 
@@ -21,6 +22,7 @@ class RoutingFileGenerator:
         self.sheet_name.set(self.sheet_names[0])
         self.scatter_radius = tk.DoubleVar()
         self.scatter_radius.set(5.0)
+        self.total_stops_in_stop_file = 0
         self.day = {"Monday":'01',
                     "Tuesday":'02',
                     "Wednesday":'03',
@@ -302,6 +304,9 @@ class RoutingFileGenerator:
         # create stop ids from the expected demand in an xlsx file
         stop_ids = self.transform_demand_into_stops(self.design_file.get(), self.sheet_name.get())
 
+        # save total num of stop ids for use in allocating trucks
+        self.total_stops_in_stop_file = len(stop_ids)
+
         # do preleminary data work we need to simulate orders
         # pieces dist
         pieces_cdf = self.get_discrete_dist("Pieces Distribution")
@@ -340,7 +345,7 @@ class RoutingFileGenerator:
             stop["Zip"] = int(stop_id.split("_")[0])  # create the stop zip column and fill with zips
             stop["Pieces"] = int(self.discrete_dist_draw(pieces_cdf))
             pcs = stop["Pieces"]
-            stop["Fixed Time"] = self.calc_volume(time_parameters, pcs)
+            stop["FixedTime"] = self.calc_volume(time_parameters, pcs)
             stop["Weight"] = self.calc_volume(weight_parameters, pcs)
             stop["Cube"] = self.calc_volume(cube_parameters, pcs)
             for tw, opn, close, pattern in time_windows:
@@ -361,8 +366,9 @@ class RoutingFileGenerator:
 
         return stop_data
 
-    def build_file(self, a_dict_of_data, a_file_name):
-
+    def build_file(self, a_dict_of_data, a_file_name, a_file_type):
+        """Writes a dicts of data out with keys as columns as either a .csv or .xlsx file.
+        Note: Truck files must be written out as csv or appian will fail to load the trucks"""
         data = []
         build_header = True
         header = []
@@ -377,15 +383,24 @@ class RoutingFileGenerator:
                 line.append(record[key])
             data.append(line)
 
-        workbook = xlsxwriter.Workbook(a_file_name)
-        worksheet = workbook.add_worksheet()
+        if a_file_type == "xlsx":
+            workbook = xlsxwriter.Workbook(a_file_name)
+            worksheet = workbook.add_worksheet()
 
-        # Iterate over the data and write it out row by row.
-        for row in range(len(data)):
-            for col in range(len(data[row])):
-                worksheet.write(row, col, data[row][col])
+            # Iterate over the data and write it out row by row.
+            for row in range(len(data)):
+                for col in range(len(data[row])):
+                    worksheet.write(row, col, data[row][col])
+            workbook.close()
 
-        workbook.close()
+        if a_file_type == "csv":
+            with open(a_file_name, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                for row in data:
+                    writer.writerow(row)
+
+
+
         return None
 
     def initialize_truck_data(self):
@@ -426,7 +441,7 @@ class RoutingFileGenerator:
         truckdict["Other_Required"]["OneWay"].set("FALSE")
         truckdict["Other_Required"]["Redispatch"].set("FALSE")
         truckdict["Other_Required"]["EDate"].set(0)
-        truckdict["Other_Required"]["LDate"].set(9)
+        truckdict["Other_Required"]["LDate"].set(6)
 
         return truckdict
 
@@ -462,6 +477,10 @@ class RoutingFileGenerator:
             truck["TrkID"]=truck_id
             for key in constants:
                 truck[key] = constants[key]
+            if truck_count_is_fixed:
+                truck_day = truck_id.split("_")[1]
+                truck["EDate"] = int(self.day[truck_day])-1
+                truck["LDate"] = truck["EDate"]
         return truck_data
 
     def browse_for_design_file(self):
@@ -476,12 +495,26 @@ class RoutingFileGenerator:
         return None
 
     def build_routing_files(self):
-        stop_data = self.build_stop_data()
-        self.build_file(stop_data,'Stop_File_Demo.xlsx')
-        truck_data = self.build_truck_data()
-        self.build_file(truck_data,'Truck_File_Demo.TRUCK')
-        print("self.build_stop_file() completed")
-        tk.messagebox.showinfo("Routing Files Generator", "Stop and Truck File Generated Successfully.")
+        passed = True
+        try:
+            stop_data = self.build_stop_data()
+        except Exception as e:
+            passed = False
+            title = "Error Building Stop File Data"
+            tk.messagebox.showerror(title, "{0}\n{1}".format(e,traceback.format_exc()))
+
+        try:
+            truck_data = self.build_truck_data()
+        except Exception as e:
+            passed = False
+            title = "Error Building Truck File Data"
+            tk.messagebox.showerror(title, "{0}\n{1}".format(e, traceback.format_exc()))
+
+        if passed:
+            self.build_file(stop_data, 'Stop_File_Demo.xlsx', 'xlsx')
+            self.build_file(truck_data,'Truck_File_Demo.TRUCK','csv')
+            tk.messagebox.showinfo("Routing Files Generator", "Stop and Truck File Generated Successfully.")
+
         return None
 
     def build_truck_file(self, truck_data_dict):
@@ -524,7 +557,7 @@ class RoutingFileGenerator:
                 for i in range(self.truck_data["Capacity"]["Truck Count"].get()):
                     truck_ids.append("Truck_{0}_{1}".format(day, i))
         else:
-            for i in range(len(self.stop_data)):
+            for i in range(int(self.total_stops_in_stop_file/5)):
                 truck_ids.append("Truck_{0}".format(i))
         return truck_ids
 
